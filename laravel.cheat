@@ -1,0 +1,99 @@
+% laravel, setup, stato
+@ laravel, setup, base
+
+# 0.0.1 stato: Mostra i passi fatti e mancanti di un progetto
+bash ~/dev/www/_setup/stato.sh <progetto>
+
+% laravel, setup, base
+
+# 1.0.1 base: Riserva un indice porte per un nuovo progetto
+awk -v n='<nuovo>' '!/^#/ { if ($1 == n) dup = 1; if ($2 + 0 > m) m = $2 + 0 } END { if (n !~ /^[a-z][a-z0-9-]*$/) { print "Nome non valido (a-z, 0-9, -): " n; exit 1 } if (dup) { print "Progetto gia registrato: " n; exit 1 } print n "\t" m + 1 >> FILENAME; print n " -> indice " m + 1 }' ~/dev/www/_setup/ports.tsv
+
+# 1.0.2 base: Crea il progetto Laravel (usa PHP e Composer dell'immagine Sail locale)
+mkdir ~/dev/www/<progetto> &&
+docker run --rm -it --pull never -e WWWUSER="$(id -u)" -v "$HOME/dev/www/<progetto>:/var/www/html" sail-8.5/app composer create-project "laravel/laravel:^<versione>.0" .
+
+# 1.0.3 base: Installa Sail con MySQL e Mailpit
+cd ~/dev/www/<progetto> && [ ! -e compose.yaml ] &&
+docker run --rm -it --pull never -e WWWUSER="$(id -u)" -v "$PWD:/var/www/html" sail-8.5/app php artisan sail:install --with=mysql,mailpit --php=8.5
+
+# 1.0.4 base: Collega dominio, proxy e porte
+cd ~/dev/www/<progetto> && ! grep -q '^VIRTUAL_HOST=' .env &&
+N=$(awk -v n='<progetto>' '$1 == n { print $2 }' ~/dev/www/_setup/ports.tsv) && [ -n "$N" ] &&
+cp ~/dev/www/_setup/stubs/compose.override.yaml . &&
+sed -i 's|^APP_NAME=.*|APP_NAME=<progetto>|; s|^APP_URL=.*|APP_URL=http://<progetto>.localhost|' .env .env.example &&
+printf '%s\n' '' 'VIRTUAL_HOST=<progetto>.localhost' "VITE_PORT=$((5173 + N))" "FORWARD_DB_PORT=$((3306 + N))" "FORWARD_MAILPIT_PORT=$((1025 + N))" "FORWARD_MAILPIT_DASHBOARD_PORT=$((8025 + N))" | tee -a .env .env.example > /dev/null
+
+# 1.0.5 base: Avvia i container e lancia le migration
+cd ~/dev/www/<progetto> && ./vendor/bin/sail up -d --wait && ./vendor/bin/sail artisan migrate
+
+# 1.0.6 base: Verifica dominio e porte
+cd ~/dev/www/<progetto> && ./vendor/bin/sail ps && curl -sS -o /dev/null -w '%{http_code}\n' http://<progetto>.localhost
+
+$ progetto: awk '!/^#/ && $2 > 0 { print $1 }' ~/dev/www/_setup/ports.tsv
+$ versione: printf '%s\n' 12 13
+
+% laravel, setup, uikit
+@ laravel, setup, base
+
+# 2.0.1 uikit: Sostituisce i pacchetti npm di Tailwind con UIkit
+cd ~/dev/www/<progetto> && ./vendor/bin/sail npm uninstall tailwindcss @tailwindcss/vite && ./vendor/bin/sail npm install uikit
+
+# 2.0.2 uikit: Collega UIkit a CSS, JS e Vite
+cd ~/dev/www/<progetto> && ! grep -q uikit resources/js/app.js &&
+sed -i '/tailwindcss/d' vite.config.js &&
+cp ~/dev/www/_setup/stubs/uikit/app.css resources/css/app.css &&
+cat ~/dev/www/_setup/stubs/uikit/app.js >> resources/js/app.js
+
+# 2.0.3 uikit: Crea il layout UIkit e sostituisce la welcome
+cd ~/dev/www/<progetto> && [ ! -e resources/views/components/layout.blade.php ] &&
+cp -r ~/dev/www/_setup/stubs/uikit/views/. resources/views/
+
+# 2.0.4 uikit: Verifica la build e la pagina (deve stampare un file CSS e la riga del logo)
+cd ~/dev/www/<progetto> && ./vendor/bin/sail npm run build && grep -l 'uk-navbar' public/build/assets/*.css &&
+curl -sS http://<progetto>.localhost | grep 'uk-logo'
+
+% laravel, setup, pest
+@ laravel, setup, base
+
+# 3.0.1 pest: Sostituisce PHPUnit con Pest 4 (Laravel 12)
+cd ~/dev/www/<progetto> && ./vendor/bin/sail composer remove --dev phpunit/phpunit && ./vendor/bin/sail composer require --dev 'pestphp/pest:^4.7' --with-all-dependencies
+
+# 3.0.2 pest: Genera Pest.php e test di esempio, attiva RefreshDatabase
+cd ~/dev/www/<progetto> && [ ! -e tests/Pest.php ] &&
+rm -f tests/Unit/ExampleTest.php tests/Feature/ExampleTest.php &&
+./vendor/bin/sail shell -c 'PEST_NO_SUPPORT=true php vendor/bin/pest --init' &&
+sed -i 's|^ *// *->use(RefreshDatabase|    ->use(RefreshDatabase|' tests/Pest.php && grep -n '^    ->use(RefreshDatabase' tests/Pest.php
+
+# 3.0.3 pest: Verifica i test (2 passed, si ferma se manca 3.0.2)
+cd ~/dev/www/<progetto> && grep -n '^    ->use(RefreshDatabase' tests/Pest.php && ./vendor/bin/sail pest
+
+% laravel, setup, browser
+@ laravel, setup, base
+
+# 4.0.1 browser: Installa pest-plugin-browser, Playwright e Chromium
+cd ~/dev/www/<progetto> && [ -e tests/Pest.php ] &&
+./vendor/bin/sail composer require --dev 'pestphp/pest-plugin-browser:^4.3' --with-all-dependencies &&
+./vendor/bin/sail npm install playwright && ./vendor/bin/sail npx playwright install chromium
+
+# 4.0.2 browser: Aggiunge la testsuite Browser e un test di esempio
+cd ~/dev/www/<progetto> && [ -e tests/Pest.php ] && [ ! -e tests/Browser ] &&
+sed -i "s|^    ->in('Feature');|    ->in('Feature', 'Browser');|" tests/Pest.php && grep -n "'Browser'" tests/Pest.php &&
+sed -i -e '/name="Feature"/,/testsuite>/{/testsuite>/r '"$HOME"'/dev/www/_setup/stubs/browser/phpunit-suite.xml' -e '}' phpunit.xml && grep -n 'tests/Browser' phpunit.xml &&
+echo '/tests/Browser/Screenshots' >> .gitignore &&
+mkdir tests/Browser && cp ~/dev/www/_setup/stubs/browser/HomeTest.php tests/Browser/
+
+# 4.0.3 browser: Verifica i browser test (1 passed)
+cd ~/dev/www/<progetto> && ./vendor/bin/sail pest --testsuite=Browser
+
+% laravel, setup, git
+@ laravel, setup, base
+
+# 9.0.1 git: Crea il repository e prepara i file (si ferma se .env finirebbe nel commit)
+cd ~/dev/www/<progetto> && [ ! -e .git ] && git init -b main && git add -A &&
+! git ls-files | grep -x '.env' && git status --short
+
+# 9.0.2 git: Primo commit
+cd ~/dev/www/<progetto> && git commit -m '<messaggio>' && git log --oneline
+
+$ messaggio: printf '%s\n' 'Laravel 12 + Sail, UIkit e Pest'

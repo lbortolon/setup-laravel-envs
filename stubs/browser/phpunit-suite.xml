@@ -1,0 +1,3 @@
+        <testsuite name="Browser">
+            <directory>tests/Browser</directory>
+        </testsuite>
